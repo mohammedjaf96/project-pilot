@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Pilot"
+  short_description: "Deliver software with compact context and verified scope"
+  default_prompt: "Use $project-pilot to plan this project, open its decision portal, and deliver the approved scope with compact context and dependency-aware verification."
