@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from urllib import request, error, parse
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -156,6 +157,15 @@ class FingerprintTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
+    def test_loopback_startup_does_not_depend_on_reverse_dns(self):
+        with patch('socket.getfqdn', side_effect=RuntimeError('DNS must not be needed')):
+            server = portal.LoopbackHTTPServer(('127.0.0.1', 0), portal.BaseHTTPRequestHandler)
+            try:
+                self.assertEqual(server.server_name, '127.0.0.1')
+                self.assertGreater(server.server_port, 0)
+            finally:
+                server.server_close()
+
     def test_revision_conflict_does_not_overwrite_state(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / 'state.json'
@@ -176,6 +186,7 @@ class CommandTests(unittest.TestCase):
 class PortalTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / 'state.json'
         state = portal.initial()
         state['proposal']['features'] = [feature('orders'), feature('products'),
@@ -184,25 +195,30 @@ class PortalTests(unittest.TestCase):
         state['questions'] = [{'id': 'currency', 'default': 'USD'}]
         state['readyForAdoption'] = True
         portal.write(self.path, state)
+        startup = self.path.parent / 'startup.log'
+        output = startup.open('w')
+        self.addCleanup(output.close)
         self.process = subprocess.Popen([sys.executable, str(ROOT / 'scripts/portal.py'), 'serve',
                                          '--state', str(self.path), '--no-open'],
-                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                        stdout=output, stderr=subprocess.STDOUT)
+        self.addCleanup(self.stop_server)
         launch = self.path.parent / '.local/launchUrl'
-        for _ in range(100):
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
             if launch.exists() and launch.stat().st_size:
                 break
             if self.process.poll() is not None:
-                self.fail('Portal process exited during startup')
+                self.fail('Portal process exited during startup: ' + startup.read_text())
             time.sleep(.03)
-        self.assertTrue(launch.exists())
+        self.assertTrue(launch.exists(), 'Portal startup timed out: ' + startup.read_text())
         url = parse.urlsplit(launch.read_text())
         self.origin = f'{url.scheme}://{url.netloc}'
         self.token = parse.parse_qs(url.fragment)['token'][0]
 
-    def tearDown(self):
-        self.process.terminate()
-        self.process.wait(timeout=5)
-        self.temp.cleanup()
+    def stop_server(self):
+        if self.process.poll() is None:
+            self.process.terminate()
+            self.process.wait(timeout=5)
 
     def call(self, path='/api/state', body=None, authorized=True, origin=True, extra=None):
         headers = dict(extra or {})

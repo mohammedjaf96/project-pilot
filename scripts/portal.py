@@ -12,10 +12,19 @@ import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 import webbrowser
 
 LOCK = threading.RLock()
 ASSET = Path(__file__).resolve().parent.parent / 'assets' / 'portal.html'
+
+
+class LoopbackHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # The known loopback address needs no potentially slow reverse DNS lookup.
+        TCPServer.server_bind(self)
+        self.server_name = '127.0.0.1'
+        self.server_port = self.server_address[1]
 
 
 def read(path):
@@ -290,7 +299,7 @@ def serve(path, port, auto_open):
             except (ValueError, KeyError, TypeError) as error:
                 self.reply(400, {'error': str(error)})
 
-    server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    server = LoopbackHTTPServer(('127.0.0.1', port), Handler)
     url = f'http://127.0.0.1:{server.server_port}/#token={token}'
     print('Portal listening on loopback. The private browser token is not logged.', flush=True)
     if auto_open:
